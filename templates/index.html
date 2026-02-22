@@ -1,0 +1,206 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Campus Crisis Map</title>
+    <link rel="stylesheet" href="/static/style.css">
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"/>
+    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+    <script src="https://unpkg.com/leaflet.heat@0.2.0/dist/leaflet-heat.js"></script>
+</head>
+<body>
+
+    <header>
+        <h1>🚨 Campus Crisis Map</h1>
+        <p>Anonymously report issues on campus. Help keep our community safe.</p>
+        <div id="stats-bar">
+            <div class="stat"><span id="stat-total">0</span><label>Total Reports</label></div>
+            <div class="stat"><span id="stat-resolved">0</span><label>Resolved</label></div>
+            <div class="stat"><span id="stat-rate">0%</span><label>Resolution Rate</label></div>
+            <div class="stat"><span id="stat-top">—</span><label>Top Issue</label></div>
+        </div>
+    </header>
+
+    <main>
+        <div id="map"></div>
+
+        <div id="report-panel">
+            <h2>Submit a Report</h2>
+            <form id="report-form">
+                <label>Category</label>
+                <select id="category" required>
+                    <option value="">Select a category</option>
+                    <option value="Broken Elevator">Broken Elevator</option>
+                    <option value="Unsafe Lighting">Unsafe Lighting</option>
+                    <option value="Internet Outage">Internet Outage</option>
+                    <option value="Accessibility Issue">Accessibility Issue</option>
+                    <option value="Building Issue">Building Issue</option>
+                    <option value="Other">Other</option>
+                </select>
+
+                <label>Description</label>
+                <textarea id="description" placeholder="Describe the issue..." required></textarea>
+
+                <label>Location Name</label>
+                <input type="text" id="location" placeholder="e.g. Library 2nd Floor" required>
+
+                <p id="coords-display">📍 Click on the map to pin the location</p>
+
+                <button type="submit">Submit Report</button>
+            </form>
+            <div id="success-msg" style="display:none">✅ Report submitted! Thank you.</div>
+        </div>
+    </main>
+
+    <div id="reports-list">
+        <h2>Recent Reports</h2>
+        <div id="reports-container"></div>
+    </div>
+
+    <script>
+        // Initialize the map
+        const map = L.map('map').setView([40.7681, -73.9819], 17);        L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+            attribution: '© OpenStreetMap contributors'
+        }).addTo(map);
+
+        let selectedLat = null;
+        let selectedLng = null;
+        let selectedMarker = null;
+
+        // When user clicks map, drop a pin
+        map.on('click', function(e) {
+            selectedLat = e.latlng.lat;
+            selectedLng = e.latlng.lng;
+
+            if (selectedMarker) map.removeLayer(selectedMarker);
+            selectedMarker = L.marker([selectedLat, selectedLng]).addTo(map);
+            document.getElementById('coords-display').textContent = 
+                `📍 Pinned: ${selectedLat.toFixed(4)}, ${selectedLng.toFixed(4)}`;
+        });
+
+        // Submit form
+        document.getElementById('report-form').addEventListener('submit', async function(e) {
+            e.preventDefault();
+
+            if (!selectedLat || !selectedLng) {
+                alert('Please click on the map to pin your location first.');
+                return;
+            }
+
+            const report = {
+                category: document.getElementById('category').value,
+                description: document.getElementById('description').value,
+                location: document.getElementById('location').value,
+                latitude: selectedLat,
+                longitude: selectedLng
+            };
+
+            const response = await fetch('/api/reports', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(report)
+            });
+
+            if (response.ok) {
+                document.getElementById('report-form').reset();
+                document.getElementById('success-msg').style.display = 'block';
+                document.getElementById('coords-display').textContent = '📍 Click on the map to pin the location';
+                selectedLat = null;
+                selectedLng = null;
+                if (selectedMarker) map.removeLayer(selectedMarker);
+                loadReports();
+                setTimeout(() => {
+                    document.getElementById('success-msg').style.display = 'none';
+                }, 3000);
+            }
+        });
+
+        // Load and display reports
+        async function loadReports() {
+            const response = await fetch('/api/reports');
+            const reports = await response.json();
+
+            // Clear existing markers and heat layers
+            map.eachLayer(layer => {
+                if (layer instanceof L.Marker || layer._heat) map.removeLayer(layer);
+            });
+
+            // Build heatmap data
+            const heatData = reports
+                .filter(r => r.latitude && r.longitude)
+                .map(r => [r.latitude, r.longitude, 1]);
+
+            if (heatData.length > 0) {
+                L.heatLayer(heatData, {
+                    radius: 35,
+                    blur: 25,
+                    maxZoom: 17,
+                    gradient: { 0.4: 'blue', 0.6: 'yellow', 0.8: 'orange', 1.0: 'red' }
+                }).addTo(map);
+            }
+
+            // Color code by category
+            const categoryColors = {
+                'Broken Elevator': '🔴',
+                'Unsafe Lighting': '🟡',
+                'Internet Outage': '🔵',
+                'Accessibility Issue': '🟠',
+                'Building Issue': '🟤',
+                'Other': '⚪'
+            };
+
+            // Plot each report on map
+            reports.forEach(report => {
+                if (report.latitude && report.longitude) {
+                    L.marker([report.latitude, report.longitude])
+                        .addTo(map)
+                        .bindPopup(`
+                            <b>${categoryColors[report.category] || '⚪'} ${report.category}</b><br>
+                            ${report.description}<br>
+                            <small>${report.location}</small><br>
+                            <small>${new Date(report.timestamp).toLocaleString()}</small>
+                        `);
+                }
+            });
+
+            // Show reports list
+            const container = document.getElementById('reports-container');
+            container.innerHTML = reports.map(r => `
+            <div class="report-card status-${r.status}">
+                <div class="card-header">
+                    <span class="badge">${r.category}</span>
+                    <select class="status-select" onchange="updateStatus(${r.id}, this.value)">
+                        <option value="open" ${r.status === 'open' ? 'selected' : ''}>🔴 Open</option>
+                        <option value="in_progress" ${r.status === 'in_progress' ? 'selected' : ''}>🟡 In Progress</option>
+                        <option value="resolved" ${r.status === 'resolved' ? 'selected' : ''}>🟢 Resolved</option>
+                    </select>
+                </div>
+                <p>${r.description}</p>
+                <small>📍 ${r.location} · ${new Date(r.timestamp).toLocaleString()}</small>
+            </div>
+        `).join('');
+        }
+
+        loadReports();
+
+        async function updateStatus(id, status) {
+    await fetch(`/api/reports/${id}/status`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ status })
+    });
+    loadReports();
+    loadStats();}
+
+async function loadStats() {
+    const response = await fetch('/api/stats');
+    const stats = await response.json();
+    document.getElementById('stat-total').textContent = stats.total;
+    document.getElementById('stat-resolved').textContent = stats.resolved;
+    document.getElementById('stat-rate').textContent = stats.resolution_rate + '%';
+    document.getElementById('stat-top').textContent = stats.top_category;
+}
+    </script>
+</body>
+</html>
